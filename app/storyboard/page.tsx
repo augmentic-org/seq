@@ -68,6 +68,17 @@ export default function StoryboardPage() {
     saveSession({ step: "transition", masterData: data })
   }
 
+  // Augmentic fork: panels generated individually (per-panel t2i) arrive already
+  // separated — skip the transition + slice/extract steps entirely.
+  const handlePanelsGenerated = (panels: string[], prompt: string) => {
+    const data = { url: panels[0], prompt, panelCount: panels.length }
+    setMasterData(data)
+    setProcessedPanels(panels)
+    setStep("selection")
+    saveSession({ step: "selection", masterData: data, processedPanels: panels })
+    toast.success(`${panels.length} panels ready for selection`)
+  }
+
   const handleTransitionGenerated = (panels: string[]) => {
     setTransitionPanels(panels)
     setStep("process")
@@ -334,7 +345,9 @@ export default function StoryboardPage() {
           )}
 
           {/* Step Content */}
-          {step === "prompt" && <MasterGenerator onGenerate={handleMasterGenerated} />}
+          {step === "prompt" && (
+            <MasterGenerator onGenerate={handleMasterGenerated} onPanelsGenerated={handlePanelsGenerated} />
+          )}
 
           {step === "transition" && masterData && (
             <TransitionGenerator

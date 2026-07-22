@@ -4,17 +4,27 @@
 // Fallback: Vercel AI Gateway (AI_GATEWAY_API_KEY — paid, also unlocks gpt-image).
 import { createGateway } from "@ai-sdk/gateway"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 
-export type ProviderKind = "google" | "gateway" | null
+export type ProviderKind = "local" | "google" | "gateway" | null
 
+// Local Ollama first (free forever, org doctrine), then Google, then gateway.
 export function activeProvider(): ProviderKind {
+  if (process.env.OLLAMA_BASE_URL) return "local"
   if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) return "google"
   if (process.env.AI_GATEWAY_API_KEY) return "gateway"
   return null
 }
 
 export const NO_KEY_ERROR =
-  "No AI key configured. Set GOOGLE_GENERATIVE_AI_API_KEY (free key from aistudio.google.com) or AI_GATEWAY_API_KEY in .env.local."
+  "No AI provider configured. Set OLLAMA_BASE_URL (local, free), GOOGLE_GENERATIVE_AI_API_KEY (aistudio.google.com), or AI_GATEWAY_API_KEY in .env.local."
+
+function ollamaProvider() {
+  return createOpenAICompatible({
+    name: "ollama",
+    baseURL: process.env.OLLAMA_BASE_URL!, // e.g. http://mohit-ws:11434/v1
+  })
+}
 
 function googleProvider() {
   return createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY })
@@ -25,8 +35,16 @@ export function gatewayProvider() {
 }
 
 // Text + vision model (prompt enhancement, storyboard analysis).
-export function textVisionModel() {
+// Pass { vision: true } when the request carries images — the local tier then
+// routes to a vision-capable model (gemma3) instead of the text model (qwen).
+export function textVisionModel(opts?: { vision?: boolean }) {
   const kind = activeProvider()
+  if (kind === "local") {
+    const modelId = opts?.vision
+      ? process.env.SEQ_LOCAL_VISION_MODEL || "gemma3:12b"
+      : process.env.SEQ_LOCAL_TEXT_MODEL || "qwen3-coder:30b"
+    return ollamaProvider()(modelId)
+  }
   // gemini-3-flash-preview: the current-gen free-tier text/vision model — older
   // 2.5-era ids 404 ("no longer available to new users") on fresh AI Studio keys.
   if (kind === "google") return googleProvider()(process.env.SEQ_GOOGLE_TEXT_MODEL || "gemini-3-flash-preview")
@@ -58,7 +76,8 @@ export type ImageProviderKind = "cloudflare" | "google" | "gateway" | null
 
 export function imageProvider(): ImageProviderKind {
   if (cloudflareCreds()) return "cloudflare"
-  return activeProvider()
+  const kind = activeProvider()
+  return kind === "local" ? null : kind // local tier has no image generation
 }
 
 const CF_IMAGE_MODEL = process.env.SEQ_CF_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell"

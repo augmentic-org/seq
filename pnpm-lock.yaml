@@ -17,6 +17,9 @@ importers:
       '@ai-sdk/google':
         specifier: ^2.0.84
         version: 2.0.84(zod@4.1.13)
+      '@ai-sdk/openai-compatible':
+        specifier: '1'
+        version: 1.0.46(zod@4.1.13)
       '@cfworker/json-schema':
         specifier: latest
         version: 4.1.1
@@ -254,6 +257,12 @@ packages:
 
   '@ai-sdk/google@2.0.84':
     resolution: {integrity: sha512-U+z991+XIlWU1c8MqkkcvQTyOwF2T0ZI4YIW/WnTO7CDPOvrxIZOqO1Cgt3Dk5ZZWpr75oJvDB2asKJYhAl4Kg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai-compatible@1.0.46':
+    resolution: {integrity: sha512-l++VpNaAntmdp2zqUhfHJy11hGJGvsjQW4yFXv5pJ3kh0xOlrz8X3IUvlygrJJtdsuSdPzbhk2CWuclJV2Z1Eg==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -5277,6 +5286,12 @@ snapshots:
       zod: 4.1.13
 
   '@ai-sdk/google@2.0.84(zod@4.1.13)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.3
+      '@ai-sdk/provider-utils': 3.0.30(zod@4.1.13)
+      zod: 4.1.13
+
+  '@ai-sdk/openai-compatible@1.0.46(zod@4.1.13)':
     dependencies:
       '@ai-sdk/provider': 2.0.3
       '@ai-sdk/provider-utils': 3.0.30(zod@4.1.13)

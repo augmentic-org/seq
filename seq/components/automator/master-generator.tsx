@@ -15,10 +15,13 @@ import { DEMO_STORYBOARD } from "@/seq/lib/demo-data"
 
 interface MasterGeneratorProps {
   onGenerate: (imageUrl: string, prompt: string, panelCount: number) => void
+  // Augmentic fork: per-panel generation path — panels arrive already separated,
+  // no grid slicing/extraction needed downstream.
+  onPanelsGenerated?: (panels: string[], prompt: string) => void
   onLoadDemo?: () => void
 }
 
-export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps) {
+export function MasterGenerator({ onGenerate, onPanelsGenerated, onLoadDemo }: MasterGeneratorProps) {
   const [prompt, setPrompt] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -26,6 +29,9 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
   const [analyzedCount, setAnalyzedCount] = useState<number | null>(null)
   const [isEditingCount, setIsEditingCount] = useState(false)
   const [mode, setMode] = useState<"generate" | "upload">("generate")
+  const [panelCount, setPanelCount] = useState(6)
+  const [panelImages, setPanelImages] = useState<string[]>([])
+  const [genProgress, setGenProgress] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleLoadDemo = () => {
@@ -35,45 +41,69 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
     setMode("upload")
   }
 
+  // Augmentic fork: generate N separate panel images (plan → per-panel t2i)
+  // instead of one grid image. Grid layouts defeat diffusion models (flux) and
+  // the old slice/extract step needed a paid Gemini image tier.
   const handleGenerate = async () => {
     if (!prompt.trim()) return
 
     setIsGenerating(true)
     setGeneratedUrl(null)
+    setPanelImages([])
     try {
-      const formData = new FormData()
-      formData.append("mode", "text-to-image")
-      const systemPrompt =
-        "You are a professional storyboard artist creating a source image for a video generation pipeline. " +
-        "Create a strict 3x2 grid of 6 cinematic keyframes. " +
-        "CRITICAL RULES: " +
-        "1. NO TEXT, NO CAPTIONS, NO NUMBERING, NO TITLES. The image must be purely visual. " +
-        "2. NO BORDERS, NO FRAMES, NO PADDING. The panels should fill the space or have minimal separation. " +
-        "3. High-fidelity cinematic style, consistent character and lighting across all panels. " +
-        "4. Do not render the 'paper' or 'document' of a storyboard, just the raw panel images arranged in a grid. " +
-        "5. TRANSITION HANDLING: If the user describes a transition effect (zoom, pan, rotation, blur, time-shift), " +
-        "render the INTERMEDIATE STATE as a visual reference. This helps users see what the effect should look like, " +
-        "though they will generate separate first/last frames later for the actual video generation."
+      // 1. Plan per-panel prompts with the free text model (fallback: naive beats)
+      setGenProgress("Planning panels...")
+      let style = "cinematic, high-fidelity, consistent characters and lighting across shots"
+      let beats: string[] = []
+      try {
+        const planRes = await fetch("/api/seq/plan-panels", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt, panelCount }),
+        })
+        if (planRes.ok) {
+          const plan = await planRes.json()
+          if (Array.isArray(plan.panels) && plan.panels.length > 0) {
+            beats = plan.panels
+            if (plan.style) style = plan.style
+          }
+        }
+      } catch {
+        /* fall through to naive beats */
+      }
+      if (beats.length === 0) {
+        beats = Array.from(
+          { length: panelCount },
+          (_, i) => `${prompt} — story moment ${i + 1} of ${panelCount}`,
+        )
+      }
 
-      const enhancedPrompt = `${systemPrompt}\n\nUser Request: ${prompt}`
-      formData.append("prompt", enhancedPrompt)
-      formData.append("aspectRatio", "3:2")
+      // 2. Generate each panel as its own image (sequential — free-tier friendly)
+      const generated: string[] = []
+      for (let i = 0; i < beats.length; i++) {
+        setGenProgress(`Generating panel ${i + 1}/${beats.length}...`)
+        const formData = new FormData()
+        formData.append("mode", "text-to-image")
+        formData.append(
+          "prompt",
+          `Cinematic storyboard keyframe, purely visual, no text or captions. Style: ${style}. Shot: ${beats[i]}`,
+        )
+        formData.append("aspectRatio", "16:9")
 
-      const response = await fetch("/api/seq/generate-image", {
-        method: "POST",
-        body: formData,
-      })
+        const response = await fetch("/api/seq/generate-image", { method: "POST", body: formData })
+        if (!response.ok) throw new Error(`Generation failed on panel ${i + 1}`)
+        const data = await response.json()
+        generated.push(data.url)
+        setPanelImages([...generated])
+      }
 
-      if (!response.ok) throw new Error("Generation failed")
-
-      const data = await response.json()
-      setGeneratedUrl(data.url)
+      setGeneratedUrl(generated[0])
+      setAnalyzedCount(generated.length)
       setMode("generate")
-
-      analyzeImage(data.url)
     } catch (error) {
       console.error("Error:", error)
     } finally {
+      setGenProgress(null)
       setIsGenerating(false)
     }
   }
@@ -118,6 +148,11 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
   }
 
   const handleApprove = () => {
+    // Per-panel path: hand the already-separated panels straight downstream
+    if (panelImages.length > 0 && onPanelsGenerated) {
+      onPanelsGenerated(panelImages, prompt)
+      return
+    }
     if (generatedUrl) {
       onGenerate(generatedUrl, prompt || "Uploaded Storyboard Master", analyzedCount || 6)
     }
@@ -126,6 +161,7 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
   const handleReset = () => {
     setGeneratedUrl(null)
     setAnalyzedCount(null)
+    setPanelImages([])
     if (mode === "upload" && fileInputRef.current) {
       fileInputRef.current.value = ""
     }
@@ -171,6 +207,19 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
                 />
               </div>
 
+              <div className="flex items-center gap-3">
+                <Label className="whitespace-nowrap">Panels</Label>
+                <Input
+                  type="number"
+                  min={2}
+                  max={12}
+                  className="w-20 bg-[var(--surface-3)] border-[var(--border-default)]"
+                  value={panelCount}
+                  onChange={(e) => setPanelCount(Math.min(Math.max(Number.parseInt(e.target.value) || 6, 2), 12))}
+                  disabled={isGenerating}
+                />
+              </div>
+
               <Button
                 onClick={handleGenerate}
                 disabled={!prompt.trim() || isGenerating}
@@ -179,7 +228,7 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
                 {isGenerating ? (
                   <>
                     <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                    Generating Master...
+                    {genProgress || "Generating..."}
                   </>
                 ) : (
                   <>
@@ -188,6 +237,19 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
                   </>
                 )}
               </Button>
+
+              {isGenerating && panelImages.length > 0 && (
+                <div className="grid grid-cols-3 gap-2">
+                  {panelImages.map((url, i) => (
+                    <div
+                      key={i}
+                      className="relative aspect-video rounded-lg overflow-hidden border border-[var(--border-default)]"
+                    >
+                      <Image src={url || "/placeholder.svg"} alt={`Panel ${i + 1}`} fill className="object-cover" />
+                    </div>
+                  ))}
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="upload" className="space-y-6">
@@ -218,6 +280,21 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
           </Tabs>
         ) : (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {panelImages.length > 0 ? (
+              <div className="grid grid-cols-3 gap-2 rounded-xl border border-[var(--border-emphasis)] p-2">
+                {panelImages.map((url, i) => (
+                  <div
+                    key={i}
+                    className="relative aspect-video rounded-lg overflow-hidden border border-[var(--border-default)]"
+                  >
+                    <Image src={url || "/placeholder.svg"} alt={`Panel ${i + 1}`} fill className="object-cover" />
+                    <div className="absolute bottom-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[10px] text-white">
+                      {i + 1}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
             <div className="relative aspect-3/2 rounded-xl overflow-hidden border border-[var(--border-emphasis)]">
               <Image src={generatedUrl || "/placeholder.svg"} alt="Storyboard Master" fill className="object-cover" />
               <div className="absolute top-2 right-2 bg-black/70 px-3 py-1 rounded-lg text-xs font-medium text-white backdrop-blur-sm flex items-center gap-2">
@@ -265,6 +342,7 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
                 )}
               </div>
             </div>
+            )}
 
             <div className="flex gap-4">
               <Button
@@ -296,9 +374,11 @@ export function MasterGenerator({ onGenerate, onLoadDemo }: MasterGeneratorProps
               </Button>
             </div>
             <p className="text-xs text-center text-[var(--text-muted)]">
-              {analyzedCount
-                ? `Approving will slice this master into ${analyzedCount} individual panels based on AI analysis.`
-                : "Approving will automatically slice this master into panels and upscale them."}
+              {panelImages.length > 0
+                ? `${panelImages.length} panels generated individually — approving sends them straight to selection (no slicing needed).`
+                : analyzedCount
+                  ? `Approving will slice this master into ${analyzedCount} individual panels based on AI analysis.`
+                  : "Approving will automatically slice this master into panels and upscale them."}
             </p>
           </div>
         )}

@@ -16,7 +16,7 @@ interface ErrorResponse {
 
 export async function POST(request: NextRequest) {
   try {
-    const model = textVisionModel()
+    const model = textVisionModel({ vision: true })
 
     if (!model) {
       return NextResponse.json<ErrorResponse>(
