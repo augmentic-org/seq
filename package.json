@@ -12,6 +12,7 @@
   "dependencies": {
     "-": "^0.0.1",
     "@ai-sdk/gateway": "latest",
+    "@ai-sdk/google": "^2.0.84",
     "@cfworker/json-schema": "latest",
     "@cloudflare/workers-types": "latest",
     "@fal-ai/client": "latest",

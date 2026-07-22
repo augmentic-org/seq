@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { generateText } from "ai"
-import { createGateway } from "@ai-sdk/gateway"
+import { textVisionModel, NO_KEY_ERROR } from "@/lib/ai-provider"
 
 export const dynamic = "force-dynamic"
 
@@ -15,13 +15,13 @@ interface ErrorResponse {
 
 export async function POST(request: NextRequest) {
   try {
-    const apiKey = process.env.AI_GATEWAY_API_KEY
+    const model = textVisionModel()
 
-    if (!apiKey) {
+    if (!model) {
       return NextResponse.json<ErrorResponse>(
         {
           error: "Configuration error",
-          details: "No AI Gateway API key configured.",
+          details: NO_KEY_ERROR,
         },
         { status: 500 },
       )
@@ -32,12 +32,6 @@ export async function POST(request: NextRequest) {
     if (!imageUrl) {
       return NextResponse.json<ErrorResponse>({ error: "Image URL is required" }, { status: 400 })
     }
-
-    const gateway = createGateway({
-      apiKey: apiKey,
-    })
-
-    const model = gateway("google/gemini-3-pro-image")
 
     const enhancePrompt = `
       You are an expert film director and prompt engineer for AI video generation.

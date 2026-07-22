@@ -1,10 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { generateText, experimental_generateImage as generateImage } from "ai"
-import { createGateway } from "@ai-sdk/gateway"
 import { put } from "@vercel/blob"
+import { activeProvider, gatewayProvider, geminiImageModel, NO_KEY_ERROR } from "@/lib/ai-provider"
 
-// Augmentic fork: text-to-image runs on gpt-image (same gateway key) instead of
-// Gemini; image-editing mode still uses Gemini (multimodal edit path).
+// Augmentic fork: with a free Google AI Studio key (GOOGLE_GENERATIVE_AI_API_KEY)
+// everything runs on Gemini nano-banana directly. With only a Vercel gateway key,
+// text-to-image runs on gpt-image and editing on gateway-Gemini.
 const IMAGE_MODEL = process.env.SEQ_IMAGE_MODEL || "openai/gpt-image-1.5"
 
 // gpt-image supports three sizes; map the app's aspect ratios onto them
@@ -36,14 +37,11 @@ interface ErrorResponse {
 
 export async function POST(request: NextRequest) {
   try {
-    const apiKey = process.env.AI_GATEWAY_API_KEY
+    const provider = activeProvider()
 
-    if (!apiKey) {
+    if (!provider) {
       return NextResponse.json<ErrorResponse>(
-        {
-          error: "Configuration error",
-          details: "No AI Gateway API key configured. Please add AI_GATEWAY_API_KEY to environment variables.",
-        },
+        { error: "Configuration error", details: NO_KEY_ERROR },
         { status: 500 },
       )
     }
@@ -69,38 +67,70 @@ export async function POST(request: NextRequest) {
 
     const geminiAspectRatio = geminiAspectRatioMap[aspectRatio] || "1:1"
 
-    const gateway = createGateway({
-      apiKey: apiKey,
-    })
-
-    const model = gateway("google/gemini-3-pro-image")
+    const model = geminiImageModel()! // provider checked above
 
     if (mode === "text-to-image") {
       const imageGenerationPrompt = `Generate a high-quality image based on this description: ${prompt}. The image should be visually appealing and match the description as closely as possible.`
 
-      const result = await generateImage({
-        model: gateway.imageModel(IMAGE_MODEL),
+      if (provider === "gateway") {
+        // gpt-image via the Vercel gateway (dedicated image-model endpoint)
+        const result = await generateImage({
+          model: gatewayProvider().imageModel(IMAGE_MODEL),
+          prompt: imageGenerationPrompt,
+          size: gptImageSize(aspectRatio),
+        })
+
+        const firstImage = result.image
+        if (!firstImage) {
+          return NextResponse.json<ErrorResponse>(
+            { error: "No image generated", details: "The model did not return any images" },
+            { status: 500 },
+          )
+        }
+
+        const mediaType = firstImage.mediaType || "image/png"
+        const imageUrl = `data:${mediaType};base64,${firstImage.base64}`
+        const blobUrl = shouldUploadToBlob ? await uploadImageToBlob(firstImage.base64, mediaType) : null
+
+        return NextResponse.json<GenerateImageResponse>({
+          url: blobUrl || imageUrl,
+          prompt: prompt,
+          description: "",
+        })
+      }
+
+      // Direct Google (free tier): Gemini multimodal generateText returning image files
+      const result = await generateText({
+        model,
         prompt: imageGenerationPrompt,
-        size: gptImageSize(aspectRatio),
+        providerOptions: {
+          google: {
+            responseModalities: ["IMAGE"],
+            imageConfig: {
+              aspectRatio: geminiAspectRatio,
+            },
+          },
+        },
       })
 
-      const firstImage = result.image
-      if (!firstImage) {
+      const imageFiles = result.files?.filter((f) => f.mediaType?.startsWith("image/")) || []
+
+      if (imageFiles.length === 0) {
         return NextResponse.json<ErrorResponse>(
           { error: "No image generated", details: "The model did not return any images" },
           { status: 500 },
         )
       }
 
-      const mediaType = firstImage.mediaType || "image/png"
-      const imageUrl = `data:${mediaType};base64,${firstImage.base64}`
+      const firstImage = imageFiles[0]
+      const imageUrl = `data:${firstImage.mediaType};base64,${firstImage.base64}`
 
-      const blobUrl = shouldUploadToBlob ? await uploadImageToBlob(firstImage.base64, mediaType) : null
+      const blobUrl = shouldUploadToBlob ? await uploadImageToBlob(firstImage.base64, firstImage.mediaType) : null
 
       return NextResponse.json<GenerateImageResponse>({
         url: blobUrl || imageUrl, // Use blob URL if uploaded, otherwise base64
         prompt: prompt,
-        description: "",
+        description: result.text || "",
       })
     } else if (mode === "image-editing") {
       const image1 = formData.get("image1") as File
