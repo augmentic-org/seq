@@ -1,7 +1,14 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { generateText, experimental_generateImage as generateImage } from "ai"
 import { put } from "@vercel/blob"
-import { activeProvider, gatewayProvider, geminiImageModel, NO_KEY_ERROR } from "@/lib/ai-provider"
+import {
+  activeProvider,
+  gatewayProvider,
+  geminiImageModel,
+  generateWithCloudflare,
+  imageProvider,
+  NO_KEY_ERROR,
+} from "@/lib/ai-provider"
 
 // Augmentic fork: with a free Google AI Studio key (GOOGLE_GENERATIVE_AI_API_KEY)
 // everything runs on Gemini nano-banana directly. With only a Vercel gateway key,
@@ -39,7 +46,7 @@ export async function POST(request: NextRequest) {
   try {
     const provider = activeProvider()
 
-    if (!provider) {
+    if (!provider && !imageProvider()) {
       return NextResponse.json<ErrorResponse>(
         { error: "Configuration error", details: NO_KEY_ERROR },
         { status: 500 },
@@ -67,7 +74,30 @@ export async function POST(request: NextRequest) {
 
     const geminiAspectRatio = geminiAspectRatioMap[aspectRatio] || "1:1"
 
-    const model = geminiImageModel()! // provider checked above
+    if (mode === "text-to-image" && imageProvider() === "cloudflare") {
+      // FREE path: flux-1-schnell on Cloudflare Workers AI (~230 images/day).
+      // flux outputs square frames — fold the aspect intent into the prompt.
+      const arHint = geminiAspectRatio !== "1:1" ? ` Compose the image for a ${geminiAspectRatio} aspect ratio.` : ""
+      const imageUrl = await generateWithCloudflare(`${prompt}${arHint}`)
+      const blobUrl = shouldUploadToBlob
+        ? await uploadImageToBlob(imageUrl.split(",", 2)[1], "image/jpeg")
+        : null
+      return NextResponse.json<GenerateImageResponse>({
+        url: blobUrl || imageUrl,
+        prompt: prompt,
+        description: "",
+      })
+    }
+
+    const model = geminiImageModel()
+    if (!model) {
+      // Only Cloudflare creds present — fine for text-to-image (handled above),
+      // but editing needs a Gemini-capable key.
+      return NextResponse.json<ErrorResponse>(
+        { error: "Configuration error", details: `This mode needs a Gemini-capable key. ${NO_KEY_ERROR}` },
+        { status: 500 },
+      )
+    }
 
     if (mode === "text-to-image") {
       const imageGenerationPrompt = `Generate a high-quality image based on this description: ${prompt}. The image should be visually appealing and match the description as closely as possible.`
