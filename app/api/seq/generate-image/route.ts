@@ -1,7 +1,20 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { generateText } from "ai"
+import { generateText, experimental_generateImage as generateImage } from "ai"
 import { createGateway } from "@ai-sdk/gateway"
 import { put } from "@vercel/blob"
+
+// Augmentic fork: text-to-image runs on gpt-image (same gateway key) instead of
+// Gemini; image-editing mode still uses Gemini (multimodal edit path).
+const IMAGE_MODEL = process.env.SEQ_IMAGE_MODEL || "openai/gpt-image-1.5"
+
+// gpt-image supports three sizes; map the app's aspect ratios onto them
+function gptImageSize(aspectRatio: string): "1024x1024" | "1536x1024" | "1024x1536" {
+  const landscape = ["landscape", "wide", "16:9", "21:9", "3:2", "4:3", "5:4"]
+  const portrait = ["portrait", "9:16", "2:3", "3:4", "4:5"]
+  if (landscape.includes(aspectRatio)) return "1536x1024"
+  if (portrait.includes(aspectRatio)) return "1024x1536"
+  return "1024x1024"
+}
 
 export const dynamic = "force-dynamic"
 
@@ -65,37 +78,29 @@ export async function POST(request: NextRequest) {
     if (mode === "text-to-image") {
       const imageGenerationPrompt = `Generate a high-quality image based on this description: ${prompt}. The image should be visually appealing and match the description as closely as possible.`
 
-      const result = await generateText({
-        model,
+      const result = await generateImage({
+        model: gateway.imageModel(IMAGE_MODEL),
         prompt: imageGenerationPrompt,
-        providerOptions: {
-          google: {
-            responseModalities: ["IMAGE"],
-            imageConfig: {
-              aspectRatio: geminiAspectRatio,
-            },
-          },
-        },
+        size: gptImageSize(aspectRatio),
       })
 
-      const imageFiles = result.files?.filter((f) => f.mediaType?.startsWith("image/")) || []
-
-      if (imageFiles.length === 0) {
+      const firstImage = result.image
+      if (!firstImage) {
         return NextResponse.json<ErrorResponse>(
           { error: "No image generated", details: "The model did not return any images" },
           { status: 500 },
         )
       }
 
-      const firstImage = imageFiles[0]
-      const imageUrl = `data:${firstImage.mediaType};base64,${firstImage.base64}`
+      const mediaType = firstImage.mediaType || "image/png"
+      const imageUrl = `data:${mediaType};base64,${firstImage.base64}`
 
-      const blobUrl = shouldUploadToBlob ? await uploadImageToBlob(firstImage.base64, firstImage.mediaType) : null
+      const blobUrl = shouldUploadToBlob ? await uploadImageToBlob(firstImage.base64, mediaType) : null
 
       return NextResponse.json<GenerateImageResponse>({
         url: blobUrl || imageUrl, // Use blob URL if uploaded, otherwise base64
         prompt: prompt,
-        description: result.text || "",
+        description: "",
       })
     } else if (mode === "image-editing") {
       const image1 = formData.get("image1") as File

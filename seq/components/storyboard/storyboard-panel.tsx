@@ -204,6 +204,7 @@ export function StoryboardPanel({
                   <SelectItem value="veo3-fast">Veo 3.1 Fast</SelectItem>
                   <SelectItem value="veo3-standard">Veo 3.1 Standard</SelectItem>
                   <SelectItem value="wan-2.5">WAN 2.5 Preview</SelectItem>
+                  <SelectItem value="wan-local">WAN 2.2 Local (3090)</SelectItem>
                 </>
               )}
             </SelectContent>

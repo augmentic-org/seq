@@ -1,5 +1,16 @@
 import { fal } from "@fal-ai/client"
 import { NextResponse } from "next/server"
+import { generateWanLocalVideo, proxyWanLocalView } from "@/lib/wan-local"
+
+// Serves videos rendered by the local ComfyUI/Wan instance (see lib/wan-local.ts)
+export async function GET(request: Request) {
+  const url = new URL(request.url)
+  const file = url.searchParams.get("file")
+  if (!file) {
+    return NextResponse.json({ error: "Missing file parameter" }, { status: 400 })
+  }
+  return proxyWanLocalView(file, url.searchParams.get("subfolder") || "", url.searchParams.get("type") || "output")
+}
 
 async function convertToDataUri(url: string): Promise<string> {
   if (url.startsWith("data:") || url.startsWith("https://")) {
@@ -66,6 +77,19 @@ export async function POST(request: Request) {
           { status: 400 },
         )
       }
+    }
+
+    // Local Wan 2.2 TI2V-5B via ComfyUI — no cloud key needed.
+    // Note: the 5B model has no first/last-frame conditioning; transition panels
+    // use the start frame only, with the prompt describing the transition.
+    if (model === "wan-local") {
+      const result = await generateWanLocalVideo({
+        prompt: prompt.trim(),
+        imageUrl: hasImage ? imageUrl.trim() : undefined,
+        duration,
+        aspectRatio,
+      })
+      return NextResponse.json(result)
     }
 
     const key = process.env.FAL_KEY || process.env.FAL_FAL_KEY
