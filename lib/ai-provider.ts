@@ -40,9 +40,12 @@ export function gatewayProvider() {
 export function textVisionModel(opts?: { vision?: boolean }) {
   const kind = activeProvider()
   if (kind === "local") {
+    // gemma3 for both duties: creative planning needs narrative coherence, which
+    // the coder model fumbles (verified: qwen3-coder broke beat order on a simple
+    // cooking sequence; gemma3 kept it filmable). One resident model, vision included.
     const modelId = opts?.vision
       ? process.env.SEQ_LOCAL_VISION_MODEL || "gemma3:12b"
-      : process.env.SEQ_LOCAL_TEXT_MODEL || "qwen3-coder:30b"
+      : process.env.SEQ_LOCAL_TEXT_MODEL || "gemma3:12b"
     return ollamaProvider()(modelId)
   }
   // gemini-3-flash-preview: the current-gen free-tier text/vision model — older

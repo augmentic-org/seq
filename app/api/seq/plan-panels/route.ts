@@ -47,7 +47,10 @@ Rules: each panel description is purely visual (no text/captions in the image), 
 
     return NextResponse.json({
       style: typeof parsed.style === "string" ? parsed.style : "",
-      panels: parsed.panels.slice(0, count).map(String),
+      // strip any leaked "Panel N:" / "Shot N:" prefixes — they'd end up rendered
+      panels: parsed.panels
+        .slice(0, count)
+        .map((p: unknown) => String(p).replace(/^\s*(panel|shot|frame)\s*\d+\s*[:.\-–]\s*/i, "")),
     })
   } catch (error) {
     console.error("Panel planning error:", error)
