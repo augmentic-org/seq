@@ -158,7 +158,26 @@ export function StoryboardContainer({
         throw new Error(errorData.error || `HTTP ${response.status}`)
       }
 
-      const result = await response.json()
+      let result = await response.json()
+
+      // Augmentic fork: local Wan renders are queued — poll until done so the
+      // request never blocks past browser network timeouts (~5 min).
+      if (result.pending && result.requestId) {
+        const deadline = Date.now() + 30 * 60 * 1000
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 5000))
+          const statusRes = await fetch(`/api/seq/generate-video?wanStatus=${encodeURIComponent(result.requestId)}`)
+          if (!statusRes.ok) {
+            const err = await statusRes.json().catch(() => ({}))
+            throw new Error(err.error || `Status check failed (${statusRes.status})`)
+          }
+          const status = await statusRes.json()
+          if (status.data?.video?.url) {
+            result = status
+            break
+          }
+        }
+      }
 
       if (result.data?.video?.url) {
         updatePanel(id, { videoUrl: result.data.video.url, isGenerating: false })

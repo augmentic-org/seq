@@ -125,7 +125,10 @@ function findOutputVideo(outputs: Record<string, any>): HistoryOutputFile | null
   return null
 }
 
-export async function generateWanLocalVideo(params: WanLocalParams) {
+// Queue the render and return immediately with the ComfyUI prompt id.
+// Renders take minutes — browsers kill fetches that stream nothing for ~5min,
+// so the client must poll checkWanLocalVideo instead of blocking on the POST.
+export async function queueWanLocalVideo(params: WanLocalParams) {
   const { width, height } = resolveDims(params.aspectRatio)
   const length = Math.min(Math.max(Math.round((params.duration || 5) * FPS) + 1, FPS + 1), MAX_LENGTH)
 
@@ -144,38 +147,38 @@ export async function generateWanLocalVideo(params: WanLocalParams) {
   const { prompt_id: promptId } = await queueRes.json()
   if (!promptId) throw new Error("ComfyUI returned no prompt_id")
 
-  // Poll history. First run loads the model (~minutes); generation on the 3090
-  // takes several minutes for 5s@720p — generous timeout.
-  const deadline = Date.now() + 20 * 60 * 1000
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 3000))
-    const histRes = await fetch(`${WAN_LOCAL_URL}/history/${promptId}`)
-    if (!histRes.ok) continue
-    const hist = await histRes.json()
-    const entry = hist[promptId]
-    if (!entry) continue
-    if (entry.status?.status_str === "error") {
-      const msgs = JSON.stringify(entry.status?.messages || []).slice(0, 500)
-      throw new Error(`ComfyUI execution error: ${msgs}`)
-    }
-    if (entry.outputs && Object.keys(entry.outputs).length > 0) {
-      const video = findOutputVideo(entry.outputs)
-      if (video) {
-        const q = new URLSearchParams({
-          file: video.filename,
-          subfolder: video.subfolder || "",
-          type: video.type || "output",
-        })
-        // fal-compatible response shape — the client reads data.video.url
-        return {
-          data: { video: { url: `/api/seq/generate-video?${q.toString()}` } },
-          requestId: promptId,
-          provider: "wan-local",
-        }
+  return { pending: true, requestId: promptId as string, provider: "wan-local" }
+}
+
+// One-shot status check for a queued render. Returns the fal-shaped result when
+// done, { pending: true } while rendering, or throws on execution error.
+export async function checkWanLocalVideo(promptId: string) {
+  const histRes = await fetch(`${WAN_LOCAL_URL}/history/${promptId}`)
+  if (!histRes.ok) return { pending: true, requestId: promptId }
+  const hist = await histRes.json()
+  const entry = hist[promptId]
+  if (!entry) return { pending: true, requestId: promptId }
+  if (entry.status?.status_str === "error") {
+    const msgs = JSON.stringify(entry.status?.messages || []).slice(0, 500)
+    throw new Error(`ComfyUI execution error: ${msgs}`)
+  }
+  if (entry.outputs && Object.keys(entry.outputs).length > 0) {
+    const video = findOutputVideo(entry.outputs)
+    if (video) {
+      const q = new URLSearchParams({
+        file: video.filename,
+        subfolder: video.subfolder || "",
+        type: video.type || "output",
+      })
+      // fal-compatible response shape — the client reads data.video.url
+      return {
+        data: { video: { url: `/api/seq/generate-video?${q.toString()}` } },
+        requestId: promptId,
+        provider: "wan-local",
       }
     }
   }
-  throw new Error("Local Wan generation timed out after 20 minutes")
+  return { pending: true, requestId: promptId }
 }
 
 export async function proxyWanLocalView(file: string, subfolder: string, type: string): Promise<Response> {

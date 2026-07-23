@@ -1,10 +1,19 @@
 import { fal } from "@fal-ai/client"
 import { NextResponse } from "next/server"
-import { generateWanLocalVideo, proxyWanLocalView } from "@/lib/wan-local"
+import { queueWanLocalVideo, checkWanLocalVideo, proxyWanLocalView } from "@/lib/wan-local"
 
-// Serves videos rendered by the local ComfyUI/Wan instance (see lib/wan-local.ts)
+// GET serves two purposes for the local ComfyUI/Wan path (see lib/wan-local.ts):
+// ?wanStatus=<promptId> → poll a queued render; ?file=... → proxy a rendered video.
 export async function GET(request: Request) {
   const url = new URL(request.url)
+  const status = url.searchParams.get("wanStatus")
+  if (status) {
+    try {
+      return NextResponse.json(await checkWanLocalVideo(status))
+    } catch (error: any) {
+      return NextResponse.json({ error: error?.message || "Status check failed" }, { status: 500 })
+    }
+  }
   const file = url.searchParams.get("file")
   if (!file) {
     return NextResponse.json({ error: "Missing file parameter" }, { status: 400 })
@@ -79,11 +88,12 @@ export async function POST(request: Request) {
       }
     }
 
-    // Local Wan 2.2 TI2V-5B via ComfyUI — no cloud key needed.
+    // Local Wan 2.2 TI2V-5B via ComfyUI — no cloud key needed. Queues and
+    // returns immediately ({pending, requestId}); the client polls ?wanStatus=.
     // Note: the 5B model has no first/last-frame conditioning; transition panels
     // use the start frame only, with the prompt describing the transition.
     if (model === "wan-local") {
-      const result = await generateWanLocalVideo({
+      const result = await queueWanLocalVideo({
         prompt: prompt.trim(),
         imageUrl: hasImage ? imageUrl.trim() : undefined,
         duration,
