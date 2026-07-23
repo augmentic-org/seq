@@ -126,13 +126,28 @@ export function StoryboardContainer({
       // request never blocks past browser network timeouts (~5 min).
       if (result.pending && result.requestId) {
         const deadline = Date.now() + 30 * 60 * 1000
+        let failures = 0
         while (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 5000))
-          const statusRes = await fetch(`/api/seq/generate-video?wanStatus=${encodeURIComponent(result.requestId)}`)
+          let statusRes: Response
+          try {
+            statusRes = await fetch(`/api/seq/generate-video?wanStatus=${encodeURIComponent(result.requestId)}`)
+          } catch {
+            failures++ // network blip — tolerate a few in a row
+            if (failures >= 6) throw new Error("Lost contact with the render server")
+            continue
+          }
           if (!statusRes.ok) {
             const err = await statusRes.json().catch(() => ({}))
-            throw new Error(err.error || `Status check failed (${statusRes.status})`)
+            // "job lost" is definitive (ComfyUI restarted); other errors may be transient
+            if (typeof err.error === "string" && err.error.includes("Render job lost")) {
+              throw new Error(err.error)
+            }
+            failures++
+            if (failures >= 6) throw new Error(err.error || `Status check failed (${statusRes.status})`)
+            continue
           }
+          failures = 0
           const status = await statusRes.json()
           if (status.data?.video?.url) {
             result = status

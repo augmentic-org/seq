@@ -152,12 +152,32 @@ export async function queueWanLocalVideo(params: WanLocalParams) {
 
 // One-shot status check for a queued render. Returns the fal-shaped result when
 // done, { pending: true } while rendering, or throws on execution error.
+// ComfyUI keeps queue+history in memory — a restart silently drops the job, so
+// when the id is in NEITHER history NOR queue we fail fast instead of letting
+// the client poll a ghost forever.
 export async function checkWanLocalVideo(promptId: string) {
   const histRes = await fetch(`${WAN_LOCAL_URL}/history/${promptId}`)
   if (!histRes.ok) return { pending: true, requestId: promptId }
   const hist = await histRes.json()
   const entry = hist[promptId]
-  if (!entry) return { pending: true, requestId: promptId }
+  if (!entry) {
+    try {
+      const queueRes = await fetch(`${WAN_LOCAL_URL}/queue`)
+      if (queueRes.ok) {
+        const q = await queueRes.json()
+        const inQueue = [...(q.queue_running || []), ...(q.queue_pending || [])].some(
+          (item: unknown[]) => Array.isArray(item) && item[1] === promptId,
+        )
+        if (!inQueue) {
+          throw new Error("Render job lost — ComfyUI likely restarted. Please generate again.")
+        }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Render job lost")) throw e
+      // queue endpoint unreachable — treat as transient
+    }
+    return { pending: true, requestId: promptId }
+  }
   if (entry.status?.status_str === "error") {
     const msgs = JSON.stringify(entry.status?.messages || []).slice(0, 500)
     throw new Error(`ComfyUI execution error: ${msgs}`)
